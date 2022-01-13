@@ -30,13 +30,14 @@
 #include "/usr/local/include/openssl/ssl.h"
 #include "/usr/local/include/openssl/err.h"
 
-#define BUF_SIZE 100000
+#define BUF_SIZE 10000
 
 struct DNS_info{
     struct {
         time_t validity_period_not_before; //gmt unix time
         time_t validity_period_not_after;  //gmt unix time
         uint32_t dns_cache_id;
+		uint32_t max_early_data_size;
     } DNSCacheInfo;
     struct {
         uint8_t *extension_type;

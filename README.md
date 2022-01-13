@@ -5,9 +5,7 @@
 > else, implement ZTLS.
 # Compile
 > gcc -o server echo_mpserv.c -lssl -lcrypto
-
-
-> gcc -o client echo_client.c -lssl -lcrypto
+> gcc -o client echo_client.c -lssl -lcrypto -lresolv
 
 
 # How to implement
@@ -25,3 +23,4 @@
 
 1. add environment variables
 export LD_LIBRARY_PATH=/usr/local/lib
+
