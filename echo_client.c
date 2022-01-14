@@ -10,70 +10,33 @@ int DNS = 1;
 // 1 = true;  //ZTLS
 
 int main(int argc, char *argv[]){
-    char msg[BUF_SIZE];
-    char *pos_dns, *pos_cert_verify;
 
-    if(DNS){    
-	    
-		res_init();
-
-		int response;
-		unsigned char query_buffer[4096];
-		{
-			ns_type type;
-			type= ns_t_txt;
-			response= res_query("aaa.ztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
-			if (response < 0) {
-				printf("Error looking up service: TXT");
-				return 2;
-			}
+	char txt_record_except_signature[BUF_SIZE];
+	char *txt_record_all;
+	res_init();
+	int response;
+	unsigned char query_buffer[4096];
+	{
+		ns_type type;
+		type= ns_t_txt;
+		response= res_query("aaa.ztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
+		if (response < 0) {
+			printf("Error looking up service: TXT");
+			return 2;
 		}
+	}
+	ns_msg nsMsg;
+	ns_rr rr;
 
-		ns_msg nsMsg;
+	if(DNS){    
 		ns_initparse(query_buffer, response, &nsMsg);
-		ns_rr rr;
 		ns_parserr(&nsMsg, ns_s_an, 0, &rr);
 		u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+1 );
-		char *blockItem;
-		blockItem=(char*)rdata;
-		blockItem[strlen((char*)rdata)] = '\0';
-//		printf("%s\n",(u_char *)blockItem);
-//		printf("end");
-/*
-		char * result;
-		result = strtok(blockItem," ");
-		while(result!=NULL) {
-			printf("%s\n", result);
-			result = strtok(NULL, " ");
-		}
-*/
-        // load string
-        FILE* fp;
-        fp = fopen("dns info.txt", "rb");
-        fread(msg, 1, BUF_SIZE, fp);
-        fclose(fp);
-
-        /*
-         * load dns info using ***string*** msg!
-         */
-        if(load_dns_info2(&dns_info, msg, blockItem) == 0){
-            printf("load dns info");
-//            return 0;
-        }
-        /*
-         * construct msg for verification
-         */
-        pos_dns = strstr(msg, "-----BEGIN DNS CACHE-----");
-        pos_cert_verify = strstr(msg, "-----BEGIN CERTIFICATE VERIFY-----");
-        msg[pos_cert_verify-pos_dns] = '\0';
-        strcat(msg, "\n");
+		txt_record_all=(char*)rdata;
+		txt_record_all[strlen((char*)rdata)] = '\0';
+        load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all); 
     }
-    /*
-     * tcp/ip
-     */
     init_openssl();
-
-
     SSL_CTX *ctx = create_context();
     // static ctx configurations 
     SSL_CTX_load_verify_locations(ctx, "./dns/cert/CarolCert.pem", "./dns/cert/");
@@ -81,7 +44,7 @@ int main(int argc, char *argv[]){
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
     SSL_CTX_set_keylog_callback(ctx, keylog_callback);
     if(DNS){ 
-	SSL_CTX_add_custom_ext(ctx, 53, SSL_EXT_CLIENT_HELLO, dns_info_add_cb, dns_info_free_cb,NULL, NULL,NULL);// extentionTye = 53, Extension_data = dns_cache_id
+		SSL_CTX_add_custom_ext(ctx, 53, SSL_EXT_CLIENT_HELLO, dns_info_add_cb, dns_info_free_cb,NULL, NULL,NULL);// extentionTye = 53, Extension_data = dns_cache_id
     }
 
     if(argc != 3){
@@ -102,12 +65,12 @@ int main(int argc, char *argv[]){
     printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
     // get ip addr
     size_t len = resolve_hostname(argv[1], argv[2], &addr);
-    // TODO get TXT record & dynamic ctx configurations for ZTLS
+    // get TXT record & dynamic ctx configurations for ZTLS
     if(DNS && dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
-	SSL_CTX_set1_groups_list(ctx, "X25519");
-	// for demo, we will add other groups later.
-	// switch 
-	// P-256, P-384, P-521, X25519, X448, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
+		SSL_CTX_set1_groups_list(ctx, "X25519");
+		// for demo, we will add other groups later.
+		// switch 
+		// P-256, P-384, P-521, X25519, X448, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
     }
     
     // log
@@ -126,19 +89,19 @@ int main(int argc, char *argv[]){
     SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
     if(DNS){ // dynamic ssl configuration for ZTLS
         SSL_set_max_early_data(ssl, (&dns_info)->DNSCacheInfo.dns_cache_id); // set dns id , use this interface temperary
-
-        /*
-         * set dns info
-         */
         SSL_use_PrivateKey(ssl, dns_info.KeyShareEntry.skey); // set server's keyshare // this function is modified 
         SSL_use_certificate(ssl, dns_info.cert); // set sever's cert and verify cert_chain // this function is modified
-        if(dns_info.CertVerifyEntry.signature_algorithms == 2052)     //rsa pss rsae sha256 0x0804
-            SSL_export_keying_material(ssl, (unsigned char*)msg,
+    	if(dns_info.CertVerifyEntry.signature_algorithms == 2052)     //rsa pss rsae sha256 0x0804
+        	SSL_export_keying_material(ssl, (unsigned char*)txt_record_except_signature,
                                        0,
                                        NULL,
                                        0,
                                        dns_info.CertVerifyEntry.cert_verify, BUF_SIZE, 0); // cert verify: signature of DNS cache info check. // this function is modified
-
+		printf("%s", txt_record_except_signature);
+		printf("\n");
+		printf("%s", dns_info.CertVerifyEntry.cert_verify);
+		printf("\n");
+		// for demo, we will only support rsa pss rsae_sha256 
     }
     /*
      * handshake start
@@ -187,7 +150,6 @@ int main(int argc, char *argv[]){
         printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
     }
     SSL_free(ssl);
-//    pclose(sock);
     close(sock);
     SSL_CTX_free(ctx);
     EVP_cleanup();
@@ -201,76 +163,46 @@ void init_openssl(){
     OpenSSL_add_all_algorithms();
 }
 
-int load_dns_info2(struct DNS_info* dp, char* msg, char* dnsmsg){
-    FILE *fp;
+int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg){
     BIO *bio_key, *bio_cert;
-    char dns_cache_info[BUF_SIZE];
-    char encrypted_extension[BUF_SIZE];
-    char support_group[BUF_SIZE];
-    char keyshare[BUF_SIZE];
-    char cert_request[BUF_SIZE];
-    char cert[BUF_SIZE];
-    char cert_verify[BUF_SIZE];
-    char* pos_dns, *pos_ee, *pos_group, *pos_key, *pos_cert, *pos_cert_verify, *pos_cert_request, *pos_end;
-    char *tmp, *tmp2;
-    int size_ee;
-    struct tm *dns_tm;
+    char *tmp;
 	char publickey_prefix[150] = "-----BEGIN PUBLIC KEY-----\n";
 	char publickey_postfix[30] = "\n-----END PUBLIC KEY-----\n";
 	char certificate_prefix[BUF_SIZE] = "-----BEGIN CERTIFICATE-----\n";
 	char certificate_postfix[30] = "-----END CERTIFICATE-----\n";
-
-	strtok(dnsmsg," ");//v=ztls1
+	char txt_record_signature[BUF_SIZE];
+	char newline[4] = "\n";
+	char * ztls_version = "v=ztls1";
+	
+	//v=ztls1 check
+	tmp = strtok(dnsmsg," ");
+	strcat(truncated_dnsmsg_out,tmp);
 	strtok(NULL, " ");//" "
-
-    pos_dns = strstr(msg, "-----BEGIN DNS CACHE-----");
-    pos_ee = strstr(msg,"-----BEGIN ENCRYPTED EXTENSIONS-----");
-    pos_group = strstr(msg,"-----BEGIN SUPPORT GROUP-----");
-    pos_key = strstr(msg, "-----BEGIN PUBLIC KEY-----");
-    pos_cert = strstr(msg, "-----BEGIN CERTIFICATE-----");
-    pos_cert_request = strstr(msg, "-----BEGIN CERTIFICATE REQUEST-----");
-    pos_cert_verify = strstr(msg, "-----BEGIN CERTIFICATE VERIFY-----");
-    pos_end = strstr(msg, "-----END CERTIFICATE VERIFY-----");
-
-    strcpy(dns_cache_info, pos_dns);
-    dns_cache_info[pos_ee-pos_dns] = '\0';
-
-    strcpy(encrypted_extension, pos_ee);
-    encrypted_extension[pos_group-pos_ee] = '\0';
-
-    strcpy(support_group, pos_group);
-    encrypted_extension[pos_key-pos_group] = '\0';
-
-    strcpy(keyshare, pos_key);
-    keyshare[pos_cert-pos_key] = '\0';
-
-    strcpy(cert, pos_cert);
-    cert[pos_cert_request-pos_cert] = '\0';
-
-    strcpy(cert_request, pos_cert_request);
-    cert_request[pos_cert_verify - pos_cert_request] = '\0';
-
-    strcpy(cert_verify, pos_cert_verify+34);
-    cert_verify[pos_end-pos_cert_verify-34] = '\0';
-
-    // load dns cache info
+	if(0!=strcmp(tmp,ztls_version)){
+		printf("DNS TXT record's ZTLS version error\n");
+	}
     
-	//tmp = strtok(dns_cache_info, "\n");
-    //tmp = strtok(NULL, "\n");
+//	printf("okokok%s",truncated_dnsmsg_out);
+
+	// load dns cache info
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
     dp->DNSCacheInfo.validity_period_not_before = is_datetime(tmp);
 	printf("DNS cache period: %s~", tmp);
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
-    //tmp = strtok(NULL, "\n");
+	strcat(truncated_dnsmsg_out,tmp);
     dp->DNSCacheInfo.validity_period_not_after = is_datetime(tmp);
 	printf("~%s\n", tmp);
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
 	dp->DNSCacheInfo.max_early_data_size = strtoul(tmp, NULL, 0);
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
     dp->DNSCacheInfo.dns_cache_id  = strtoul(tmp, NULL, 0);
+	strtok(NULL," ");
 
     // Check timestamp Valid
     if(dp->DNSCacheInfo.validity_period_not_before < time(NULL) && dp->DNSCacheInfo.validity_period_not_after > time(NULL)){
@@ -280,24 +212,25 @@ int load_dns_info2(struct DNS_info* dp, char* msg, char* dnsmsg){
     }
 
 	// load keyshare entry
-	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
     dp->KeyShareEntry.group = strtoul(tmp, NULL, 0);
     bio_key = BIO_new(BIO_s_mem());
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
 	strcat(publickey_prefix, tmp);
 	strcat(publickey_prefix, publickey_postfix);
-//	printf("%s", publickey_prefix);
     BIO_puts(bio_key, publickey_prefix);
     PEM_read_bio_PUBKEY(bio_key, &(dp->KeyShareEntry.skey), NULL, NULL);
 
+	// load certificate
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
 
 	char * begin_cert = "B_CERTIFICATE";
 	char * end_cert = "E_CERTIFICATE";
-	char newline[4] = "\n";
 
 	// ZTLS DNS certificate format
 	// B_CERTIFICATE
@@ -310,26 +243,31 @@ int load_dns_info2(struct DNS_info* dp, char* msg, char* dnsmsg){
 
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
 	int i =0;
 	while((0!=strcmp(tmp,end_cert) && i < 100)){
 		strcat(certificate_prefix, tmp);//value (1)
 		strcat(certificate_prefix, newline);
 		tmp = strtok(NULL," ");
+		strcat(truncated_dnsmsg_out,tmp);
+		if(0==strcmp(tmp,end_cert)) break;
 		strcat(certificate_prefix, tmp);//value (2)
 		strcat(certificate_prefix, newline);
 		tmp = strtok(NULL," ");
+		strcat(truncated_dnsmsg_out,tmp);
+		if(0==strcmp(tmp,end_cert)) break;
 		strcat(certificate_prefix, tmp);//value (3)
 		strcat(certificate_prefix, newline);
 		strtok(NULL," ");
 		tmp = strtok(NULL," ");
+		strcat(truncated_dnsmsg_out,tmp);
 		i++;
 	}
 	if (100 <= i ) {
 		printf("CERTIFICATE INFO ERROR\n");
 	}
 	strcat(certificate_prefix, certificate_postfix);
-	
-//	printf("%s", certificate_prefix);
+
     bio_cert = BIO_new(BIO_s_mem());
     BIO_puts(bio_cert, certificate_prefix);
     PEM_read_bio_X509(bio_cert, &(dp->cert), NULL, NULL);
@@ -338,137 +276,46 @@ int load_dns_info2(struct DNS_info* dp, char* msg, char* dnsmsg){
 // for demo No Client Certificate Request
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
 	printf("Client Certificate Request: %s\n", tmp);
 	
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
+	strcat(truncated_dnsmsg_out,tmp);
     
-//	tmp = strtok(cert_verify, "\n");
-//    dp->CertVerifyEntry.signature_algorithms = strtoul(tmp, NULL, 0);
+//	load TXT signature (cert verify)
     dp->CertVerifyEntry.signature_algorithms = strtoul(tmp, NULL, 0);
-	
-	//TODO
-	tmp = strtok(cert_verify, "\n");
-    tmp = strtok(NULL, "");
-    strcpy((char*)dp->CertVerifyEntry.cert_verify, tmp);
-
-    return 1;
+//	printf("%s",truncated_dnsmsg_out);
+	strtok(NULL," ");
+	tmp = strtok(NULL," ");
+    i =0;
+	while(i < 100){
+		strcat(txt_record_signature, tmp);//value (1)
+		strcat(txt_record_signature, newline);
+		tmp = strtok(NULL," ");
+		if(tmp == NULL) break;
+		
+		strcat(txt_record_signature, tmp);//value (2)
+		strcat(txt_record_signature, newline);
+		tmp = strtok(NULL," ");
+		if(tmp == NULL) break;
+		
+		strcat(txt_record_signature, tmp);//value (3)
+		strcat(txt_record_signature, newline);
+		strtok(NULL," ");
+		tmp = strtok(NULL," ");
+		if(tmp == NULL) break;
+		
+		i++;
+	}
+	if (100 <= i ) {
+		printf("SIGNATURE ERROR\n");
+	}
+	strcpy((char*)dp->CertVerifyEntry.cert_verify, txt_record_signature);
+//	printf("signature:\n%s",txt_record_signature);
+    return 0;
 }
 
-int load_dns_info(struct DNS_info* dp, char* msg){
-    FILE *fp;
-    BIO *bio_key, *bio_cert;
-    char dns_cache_info[BUF_SIZE];
-    char encrypted_extension[BUF_SIZE];
-    char support_group[BUF_SIZE];
-    char keyshare[BUF_SIZE];
-    char cert_request[BUF_SIZE];
-    char cert[BUF_SIZE];
-    char cert_verify[BUF_SIZE];
-    char* pos_dns, *pos_ee, *pos_group, *pos_key, *pos_cert, *pos_cert_verify, *pos_cert_request, *pos_end;
-    char *tmp, *tmp2;
-    int size_ee;
-    struct tm *dns_tm;
-
-
-    pos_dns = strstr(msg, "-----BEGIN DNS CACHE-----");
-    pos_ee = strstr(msg,"-----BEGIN ENCRYPTED EXTENSIONS-----");
-    pos_group = strstr(msg,"-----BEGIN SUPPORT GROUP-----");
-    pos_key = strstr(msg, "-----BEGIN PUBLIC KEY-----");
-    pos_cert = strstr(msg, "-----BEGIN CERTIFICATE-----");
-    pos_cert_request = strstr(msg, "-----BEGIN CERTIFICATE REQUEST-----");
-    pos_cert_verify = strstr(msg, "-----BEGIN CERTIFICATE VERIFY-----");
-    pos_end = strstr(msg, "-----END CERTIFICATE VERIFY-----");
-
-    strcpy(dns_cache_info, pos_dns);
-    dns_cache_info[pos_ee-pos_dns] = '\0';
-
-    strcpy(encrypted_extension, pos_ee);
-    encrypted_extension[pos_group-pos_ee] = '\0';
-
-    strcpy(support_group, pos_group);
-    encrypted_extension[pos_key-pos_group] = '\0';
-
-    strcpy(keyshare, pos_key);
-    keyshare[pos_cert-pos_key] = '\0';
-
-    strcpy(cert, pos_cert);
-    cert[pos_cert_request-pos_cert] = '\0';
-
-    strcpy(cert_request, pos_cert_request);
-    cert_request[pos_cert_verify - pos_cert_request] = '\0';
-
-    strcpy(cert_verify, pos_cert_verify+34);
-    cert_verify[pos_end-pos_cert_verify-34] = '\0';
-
-    // load dns cache info
-    tmp = strtok(dns_cache_info, "\n");
-    tmp = strtok(NULL, "\n");
-    dp->DNSCacheInfo.validity_period_not_before = is_datetime(tmp);
-    tmp = strtok(NULL, "\n");
-    dp->DNSCacheInfo.validity_period_not_after = is_datetime(tmp);
-    tmp = strtok(NULL, "\n");
-    dp->DNSCacheInfo.dns_cache_id  = strtoul(tmp, NULL, 0);
-
-    // Check timestamp Valid
-    if(dp->DNSCacheInfo.validity_period_not_before < time(NULL) && dp->DNSCacheInfo.validity_period_not_after > time(NULL)){
-        printf("Valid Period\n");
-    }else{
-        printf("Not Valid Period\n");
-    }
-    // load encrypted extension
-    tmp = strtok(encrypted_extension, "\n");
-    tmp = strtok(NULL, "\n");
-    size_ee = strtoul(tmp, NULL, 0);
-    dp->EncryptedExtensions.extension_type = malloc(sizeof(uint8_t)*size_ee);
-    dp->EncryptedExtensions.extension_data = malloc(sizeof(uint16_t)*size_ee);
-    for(int i=0;i<=size_ee;i++){
-        tmp = strtok(NULL, "\n");
-        dp->EncryptedExtensions.extension_type[i] = (uint8_t)strtoul(tmp, NULL, 0);
-        tmp = strtok(NULL, "\n");
-        dp->EncryptedExtensions.extension_data[i] = strtoul(tmp, NULL, 0);
-    }
-
-    // load keyshare entry
-    tmp = strtok(support_group, "\n");
-    tmp = strtok(NULL, "\n");
-    dp->KeyShareEntry.group = strtoul(tmp, NULL, 0);
-
-    bio_key = BIO_new(BIO_s_mem());
-    BIO_puts(bio_key, keyshare);
-    PEM_read_bio_PUBKEY(bio_key, &(dp->KeyShareEntry.skey), NULL, NULL);
-
-    bio_cert = BIO_new(BIO_s_mem());
-    BIO_puts(bio_cert, cert);
-    PEM_read_bio_X509(bio_cert, &(dp->cert), NULL, NULL);
-
-    tmp = strtok(cert_verify, "\n");
-    dp->CertVerifyEntry.signature_algorithms = strtoul(tmp, NULL, 0);
-    tmp = strtok(NULL, "");
-    strcpy((char*)dp->CertVerifyEntry.cert_verify, tmp);
-
-    return 1;
-}
-/*
-void construct_msg(char* msg){
-    char keyshare[BUF_SIZE];
-    char cert[BUF_SIZE];
-    FILE *fp;
-
-    fp = fopen("dns/keyshare/pubKey.pem", "rb");
-    fread(keyshare, 1, BUF_SIZE, fp);
-    fclose(fp);
-
-    fp = fopen("dns/cert/CarolCert.pem", "rb");
-    fread(cert, 1, BUF_SIZE, fp);
-    fclose(fp);
-
-    sprintf(msg, "%u", dns_info.DNSCacheInfo.dns_cache_id);
-    strcat(msg, keyshare);
-    strcat(msg, cert);
-    strcat(msg, "\n");
-}
-*/
 /*
  * SSL 구조체를 생성, 통신 프로토콜 선택;
  * return SSL_CTX* SSL 구조체;

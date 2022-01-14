@@ -1,12 +1,11 @@
 #include "echo_client.h"
 
-#include <arpa/nameser.h>
-#include <functional>
-#include <iostream>
-#include <netinet/in.h>
-#include <resolv.h>
-#include <string.h>
-#include <map>
+//#include <arpa/nameser.h>
+//#include <iostream>
+//#include <netinet/in.h>
+//#include <resolv.h>
+//#include <string.h>
+//#include <map>
 
 int DNS = 1;
 
@@ -15,7 +14,7 @@ int main(int argc, char *argv[]){
     char *pos_dns, *pos_cert_verify;
 
     if(DNS){    
-	    
+/*	    
 	res_init();
 
     	int response;
@@ -59,7 +58,7 @@ int main(int argc, char *argv[]){
 		    callbacks[type](rr);
 		}
 	    }
-
+*/
         // load string
         FILE* fp;
         fp = fopen("dns info.txt", "rb");
@@ -284,6 +283,8 @@ int load_dns_info(struct DNS_info* dp, char* msg){
     dp->CertVerifyEntry.signature_algorithms = strtoul(tmp, NULL, 0);
     tmp = strtok(NULL, "");
     strcpy((char*)dp->CertVerifyEntry.cert_verify, tmp);
+	printf("cert_verify\n");
+	printf("%s",dp->CertVerifyEntry.cert_verify);
 
     return 1;
 }
