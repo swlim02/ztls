@@ -28,14 +28,6 @@ int main(int argc, char *argv[]){
 	ns_msg nsMsg;
 	ns_rr rr;
 
-	if(DNS){    
-		ns_initparse(query_buffer, response, &nsMsg);
-		ns_parserr(&nsMsg, ns_s_an, 0, &rr);
-		u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+1 );
-		txt_record_all=(char*)rdata;
-		txt_record_all[strlen((char*)rdata)] = '\0';
-        load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all); 
-    }
     init_openssl();
     SSL_CTX *ctx = create_context();
     // static ctx configurations 
@@ -63,16 +55,25 @@ int main(int argc, char *argv[]){
     struct timespec begin;
     clock_gettime(CLOCK_MONOTONIC, &begin);
     printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+	
+	// Dynamic interaction start
     // get ip addr
     size_t len = resolve_hostname(argv[1], argv[2], &addr);
     // get TXT record & dynamic ctx configurations for ZTLS
-    if(DNS && dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
+    if(DNS){    
+		ns_initparse(query_buffer, response, &nsMsg);
+		ns_parserr(&nsMsg, ns_s_an, 0, &rr);
+		u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+1 );
+		txt_record_all=(char*)rdata;
+		txt_record_all[strlen((char*)rdata)] = '\0';
+        load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all); 
+    }
+	if(DNS && dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
 		SSL_CTX_set1_groups_list(ctx, "X25519");
 		// for demo, we will add other groups later.
 		// switch 
 		// P-256, P-384, P-521, X25519, X448, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
     }
-    
     // log
     struct timespec begin2;
     clock_gettime(CLOCK_MONOTONIC, &begin2);
@@ -92,16 +93,12 @@ int main(int argc, char *argv[]){
         SSL_use_PrivateKey(ssl, dns_info.KeyShareEntry.skey); // set server's keyshare // this function is modified 
         SSL_use_certificate(ssl, dns_info.cert); // set sever's cert and verify cert_chain // this function is modified
     	if(dns_info.CertVerifyEntry.signature_algorithms == 2052)     //rsa pss rsae sha256 0x0804
-        	SSL_export_keying_material(ssl, (unsigned char*)txt_record_except_signature,
-                                       0,
-                                       NULL,
-                                       0,
-                                       dns_info.CertVerifyEntry.cert_verify, BUF_SIZE, 0); // cert verify: signature of DNS cache info check. // this function is modified
-		printf("%s", txt_record_except_signature);
-		printf("\n");
-		printf("%s", dns_info.CertVerifyEntry.cert_verify);
-		printf("\n");
-		// for demo, we will only support rsa pss rsae_sha256 
+		{
+			strcat(txt_record_except_signature, "\n");
+			strcat(dns_info.CertVerifyEntry.cert_verify, "\n");
+			SSL_export_keying_material(ssl, (unsigned char*) txt_record_except_signature, 0, NULL, 0,
+				 dns_info.CertVerifyEntry.cert_verify, BUF_SIZE, 0); // cert verify: signature of DNS cache info check. // this function is modified
+		}	// for demo, we will only support rsa pss rsae_sha256 
     }
     /*
      * handshake start
@@ -114,18 +111,18 @@ int main(int argc, char *argv[]){
     if(!DNS){
         memcpy(message, "hello\n", 6);
         
-	SSL_write(ssl, message, strlen(message));
-        clock_gettime(CLOCK_MONOTONIC, &send_ctos);
-        printf("send : %s", message);
-        printf("%f\n",(send_ctos.tv_sec) + (send_ctos.tv_nsec) / 1000000000.0);
-        
-	if((str_len = SSL_read(ssl, message, BUF_SIZE-1))<=0){
-            printf("error\n");
-        }
-        message[str_len] = 0;
-        clock_gettime(CLOCK_MONOTONIC, &receive_ctos);
-        printf("Message from server: %s", message);
-        printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
+		SSL_write(ssl, message, strlen(message));
+			clock_gettime(CLOCK_MONOTONIC, &send_ctos);
+			printf("send : %s", message);
+			printf("%f\n",(send_ctos.tv_sec) + (send_ctos.tv_nsec) / 1000000000.0);
+				
+		if((str_len = SSL_read(ssl, message, BUF_SIZE-1))<=0){
+				printf("error\n");
+			}
+			message[str_len] = 0;
+			clock_gettime(CLOCK_MONOTONIC, &receive_ctos);
+			printf("Message from server: %s", message);
+			printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
     }
 
     while(1){
@@ -291,20 +288,20 @@ int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg
     i =0;
 	while(i < 100){
 		strcat(txt_record_signature, tmp);//value (1)
-		strcat(txt_record_signature, newline);
 		tmp = strtok(NULL," ");
 		if(tmp == NULL) break;
+		strcat(txt_record_signature, newline);
 		
 		strcat(txt_record_signature, tmp);//value (2)
-		strcat(txt_record_signature, newline);
 		tmp = strtok(NULL," ");
 		if(tmp == NULL) break;
+		strcat(txt_record_signature, newline);
 		
 		strcat(txt_record_signature, tmp);//value (3)
-		strcat(txt_record_signature, newline);
 		strtok(NULL," ");
 		tmp = strtok(NULL," ");
 		if(tmp == NULL) break;
+		strcat(txt_record_signature, newline);
 		
 		i++;
 	}
