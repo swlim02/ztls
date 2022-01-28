@@ -16,15 +16,8 @@ int main(int argc, char *argv[]){
 	res_init();
 	int response;
 	unsigned char query_buffer[4096];
-	{
-		ns_type type;
-		type= ns_t_txt;
-		response= res_query("aaa.ztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
-		if (response < 0) {
-			printf("Error looking up service: TXT");
-			return 2;
-		}
-	}
+	ns_type type;
+	type= ns_t_txt;
 	ns_msg nsMsg;
 	ns_rr rr;
 
@@ -60,7 +53,12 @@ int main(int argc, char *argv[]){
     // get ip addr
     size_t len = resolve_hostname(argv[1], argv[2], &addr);
     // get TXT record & dynamic ctx configurations for ZTLS
-    if(DNS){    
+    if(DNS){	
+		response = res_query("aaa.ztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
+		if (response < 0) {
+			printf("Error looking up service: TXT");
+			return 2;
+		}    
 		ns_initparse(query_buffer, response, &nsMsg);
 		ns_parserr(&nsMsg, ns_s_an, 0, &rr);
 		u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+1 );
@@ -112,17 +110,17 @@ int main(int argc, char *argv[]){
         memcpy(message, "hello\n", 6);
         
 		SSL_write(ssl, message, strlen(message));
-			clock_gettime(CLOCK_MONOTONIC, &send_ctos);
-			printf("send : %s", message);
-			printf("%f\n",(send_ctos.tv_sec) + (send_ctos.tv_nsec) / 1000000000.0);
+		clock_gettime(CLOCK_MONOTONIC, &send_ctos);
+		printf("send : %s", message);
+		printf("%f\n",(send_ctos.tv_sec) + (send_ctos.tv_nsec) / 1000000000.0);
 				
 		if((str_len = SSL_read(ssl, message, BUF_SIZE-1))<=0){
-				printf("error\n");
-			}
-			message[str_len] = 0;
-			clock_gettime(CLOCK_MONOTONIC, &receive_ctos);
-			printf("Message from server: %s", message);
-			printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
+			printf("error\n");
+		}
+		message[str_len] = 0;
+		clock_gettime(CLOCK_MONOTONIC, &receive_ctos);
+		printf("Message from server: %s", message);
+		printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
     }
 
     while(1){
