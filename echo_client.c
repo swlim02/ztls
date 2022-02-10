@@ -4,23 +4,80 @@
 #include <netinet/in.h>
 #include <resolv.h>
 #include <string.h>
+#include <pthread.h>
+
+#define BUF_SIZE 10000
 
 int DNS = 1; 
 // 0 = false; //normal TLS 1.3
 // 1 = true;  //ZTLS
 
+struct DNS_info{
+    struct {
+        time_t validity_period_not_before; //gmt unix time
+        time_t validity_period_not_after;  //gmt unix time
+        uint32_t dns_cache_id;
+		uint32_t max_early_data_size;
+    } DNSCacheInfo;
+    struct {
+        uint8_t *extension_type;
+        uint16_t *extension_data;
+    } EncryptedExtensions;
+    struct {
+        uint8_t group;
+        EVP_PKEY *skey; // server's keyshare
+    } KeyShareEntry;
+    X509* cert; // server's cert
+    struct {
+        uint8_t certificate_request_context;
+        uint16_t extensions;
+    } CertRequest;
+    struct {
+        uint16_t signature_algorithms;
+        unsigned char cert_verify[BUF_SIZE]; // signature
+    } CertVerifyEntry;
+} dns_info;
+
+static void init_openssl();
+static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg);
+static SSL_CTX *create_context();
+static void keylog_callback(const SSL* ssl, const char *line);
+static size_t resolve_hostname(const char *host, const char *port, struct sockaddr_storage *addr);
+static void configure_connection(SSL *ssl);
+static void error_handling(char *message);
+static int dns_info_add_cb(SSL *s, unsigned int ext_type,
+                    unsigned int context,
+                    const unsigned char **out,
+                    size_t *outlen, X509 *x, size_t chainidx,
+                    int *al, void *arg);
+
+static void dns_info_free_cb(SSL *s, unsigned int ext_type,
+                     unsigned int context,
+                     const unsigned char *out,
+                     void *add_arg);
+
+static int ext_parse_cb(SSL *s, unsigned int ext_type,
+                        const unsigned char *in,
+                        size_t inlen, int *al, void *parse_arg);
+static time_t is_datetime(const char *datetime);
+
+static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock);
+
+struct arg_struct {
+	char ** argv;
+	struct sockaddr_storage * addr;
+	int sock;
+};
+
+static void *thread_init_tcp_sync(void* arguments)
+{
+	struct arg_struct * args = (struct arg_struct *) arguments;
+	init_tcp_sync(args->argv, args->addr, args->sock);
+	pthread_exit(NULL);
+}
+
 int main(int argc, char *argv[]){
-
-	char txt_record_except_signature[BUF_SIZE];
-	char *txt_record_all;
 	res_init();
-	int response;
-	unsigned char query_buffer[4096];
-	ns_type type;
-	type= ns_t_txt;
-	ns_msg nsMsg;
-	ns_rr rr;
-
     init_openssl();
     SSL_CTX *ctx = create_context();
     // static ctx configurations 
@@ -28,9 +85,7 @@ int main(int argc, char *argv[]){
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL); // SSL_VERIFY_NONE
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
     SSL_CTX_set_keylog_callback(ctx, keylog_callback);
-    if(DNS){ 
-		SSL_CTX_add_custom_ext(ctx, 53, SSL_EXT_CLIENT_HELLO, dns_info_add_cb, dns_info_free_cb,NULL, NULL,NULL);// extentionTye = 53, Extension_data = dns_cache_id
-    }
+	SSL * ssl = NULL;
 
     if(argc != 3){
         printf("Usage : %s <port>\n", argv[0]);
@@ -43,18 +98,55 @@ int main(int argc, char *argv[]){
     }
 
     struct sockaddr_storage addr;
-    
+	char txt_record_except_signature[BUF_SIZE];
+	char *txt_record_all;
+	unsigned char query_buffer[4096];
+	int response;
+	ns_type type;
+	type= ns_t_txt;
+	ns_msg nsMsg;
+	ns_rr rr;
+
     // log
     struct timespec begin;
     clock_gettime(CLOCK_MONOTONIC, &begin);
     printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
 	
+	//=============================================================
 	// Dynamic interaction start
-    // get ip addr
+	//=============================================================
+    
+	/*
     size_t len = resolve_hostname(argv[1], argv[2], &addr);
-    // get TXT record & dynamic ctx configurations for ZTLS
-    if(DNS){	
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    printf("complete A and AAAA DNS records query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+    
+	if(connect(sock, (struct sockaddr*) &addr, len) < 0){
+        error_handling("connect() error!");
+    }else{
+    	printf("complete TCP Sync : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+    }
+
+	*/
+
+	// get TXT record & dynamic ctx configurations for ZTLS
+    if(DNS){
+//		void (*fp)(char *argv[], struct sockaddr_storage * addr, int sock);
+//		fp = init_tcp_sync;
+//		fp(argv, &addr, sock);
+
+		struct arg_struct args;
+		args.argv = argv;
+		args.addr = &addr;
+		args.sock = sock;
+
+		pthread_t ptid;
+		pthread_create(&ptid, NULL, &thread_init_tcp_sync,(void *) &args);
+
 		response = res_query("aaa.ztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
+		// log
+    	clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("complete DNS TXT record query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
 		if (response < 0) {
 			printf("Error looking up service: TXT");
 			return 2;
@@ -65,30 +157,22 @@ int main(int argc, char *argv[]){
 		txt_record_all=(char*)rdata;
 		txt_record_all[strlen((char*)rdata)] = '\0';
         load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all); 
-    }
-	if(DNS && dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
-		SSL_CTX_set1_groups_list(ctx, "X25519");
-		// for demo, we will add other groups later.
-		// switch 
-		// P-256, P-384, P-521, X25519, X448, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
-    }
-    // log
-    struct timespec begin2;
-    clock_gettime(CLOCK_MONOTONIC, &begin2);
-    printf("after DNS query : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
-    
-    if(connect(sock, (struct sockaddr*) &addr, len) < 0){
-        error_handling("connect() error!");
-    }else{
-        puts("connected...");
-    }
-    
-    SSL* ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, sock);
-    SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
-    if(DNS){ // dynamic ssl configuration for ZTLS
-        SSL_set_max_early_data(ssl, (&dns_info)->DNSCacheInfo.dns_cache_id); // set dns id , use this interface temperary
-        SSL_use_PrivateKey(ssl, dns_info.KeyShareEntry.skey); // set server's keyshare // this function is modified 
+		SSL_CTX_add_custom_ext(ctx, 53, SSL_EXT_CLIENT_HELLO, dns_info_add_cb, dns_info_free_cb,NULL, NULL,NULL);// extentionTye = 53, Extension_data = dns_cache_id
+    	if(dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
+			SSL_CTX_set1_groups_list(ctx, "X25519");
+			// for demo, we will add other groups later.
+			// switch 
+			// P-256, P-384, P-521, X25519, X448, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
+    	}
+    	ssl = SSL_new(ctx);
+    	SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
+        // Check timestamp Valid
+    	if(dns_info.DNSCacheInfo.validity_period_not_before < time(NULL) && dns_info.DNSCacheInfo.validity_period_not_after > time(NULL)){
+        	printf("Valid Period\n");
+    	}else{
+       	 	printf("Not Valid Period\n");
+    	}
+		SSL_use_PrivateKey(ssl, dns_info.KeyShareEntry.skey); // set server's keyshare // this function is modified 
         SSL_use_certificate(ssl, dns_info.cert); // set sever's cert and verify cert_chain // this function is modified
     	if(dns_info.CertVerifyEntry.signature_algorithms == 2052)     //rsa pss rsae sha256 0x0804
 		{
@@ -97,7 +181,17 @@ int main(int argc, char *argv[]){
 			SSL_export_keying_material(ssl, (unsigned char*) txt_record_except_signature, 0, NULL, 0,
 				 dns_info.CertVerifyEntry.cert_verify, BUF_SIZE, 0); // cert verify: signature of DNS cache info check. // this function is modified
 		}	// for demo, we will only support rsa pss rsae_sha256 
-    }
+
+		pthread_join(ptid, NULL);
+
+    }else {
+		init_tcp_sync(argv, &addr, sock);
+    	ssl = SSL_new(ctx);
+    	SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
+	}
+	// threads join
+
+    SSL_set_fd(ssl, sock);
     /*
      * handshake start
      */
@@ -106,7 +200,7 @@ int main(int argc, char *argv[]){
     int str_len;
     struct timespec send_ctos, receive_ctos;
 
-    if(!DNS){
+    if(!DNS){ // normal TLS 1.3
         memcpy(message, "hello\n", 6);
         
 		SSL_write(ssl, message, strlen(message));
@@ -150,15 +244,27 @@ int main(int argc, char *argv[]){
     EVP_cleanup();
     return 0;
 }
-/*
- * 알고리즘, 에러 메시지들 불러오기;
- */
-void init_openssl(){
+static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock) {
+	size_t len = resolve_hostname(argv[1], argv[2], addr);
+    struct timespec begin;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    printf("complete A and AAAA DNS records query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+    
+	if(connect(sock, (struct sockaddr*) addr, len) < 0){
+        error_handling("connect() error!");
+    }else{
+    	clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("complete TCP Sync : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+    }
+}
+
+
+static void init_openssl(){
     SSL_load_error_strings();
     OpenSSL_add_all_algorithms();
 }
 
-int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg){
+static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg){
     BIO *bio_key, *bio_cert;
     char *tmp;
 	char publickey_prefix[150] = "-----BEGIN PUBLIC KEY-----\n";
@@ -177,8 +283,6 @@ int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg
 		printf("DNS TXT record's ZTLS version error\n");
 	}
     
-//	printf("okokok%s",truncated_dnsmsg_out);
-
 	// load dns cache info
 	tmp = strtok(NULL," ");
 	strcat(truncated_dnsmsg_out,tmp);
@@ -198,13 +302,6 @@ int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg
 	strcat(truncated_dnsmsg_out,tmp);
     dp->DNSCacheInfo.dns_cache_id  = strtoul(tmp, NULL, 0);
 	strtok(NULL," ");
-
-    // Check timestamp Valid
-    if(dp->DNSCacheInfo.validity_period_not_before < time(NULL) && dp->DNSCacheInfo.validity_period_not_after > time(NULL)){
-        printf("Valid Period\n");
-    }else{
-        printf("Not Valid Period\n");
-    }
 
 	// load keyshare entry
 	tmp = strtok(NULL," ");
@@ -315,7 +412,7 @@ int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg
  * SSL 구조체를 생성, 통신 프로토콜 선택;
  * return SSL_CTX* SSL 구조체;
  */
-SSL_CTX *create_context(){
+static SSL_CTX *create_context(){
     SSL_CTX* ctx = SSL_CTX_new(SSLv23_client_method());
     if(!ctx) error_handling("fail to create ssl context");
     /*
@@ -330,11 +427,11 @@ SSL_CTX *create_context(){
  * verify
  * set version
  */
-void keylog_callback(const SSL* ssl, const char *line){
+static void keylog_callback(const SSL* ssl, const char *line){
 //    printf("==============================================\n");
 //    printf("%s\n", line);
 }
-size_t resolve_hostname(const char *host, const char *port, struct sockaddr_storage *addr){
+static size_t resolve_hostname(const char *host, const char *port, struct sockaddr_storage *addr){
     struct addrinfo *res = 0;
     if(getaddrinfo(host, port, 0, &res) != 0)
         error_handling("fail to transform address");
@@ -343,7 +440,7 @@ size_t resolve_hostname(const char *host, const char *port, struct sockaddr_stor
     freeaddrinfo(res);
     return len;
 }
-void configure_connection(SSL *ssl){
+static void configure_connection(SSL *ssl){
     SSL_set_tlsext_host_name(ssl, "ztls.net");
     SSL_set_connect_state(ssl);
     if(SSL_do_handshake(ssl) <= 0){
@@ -351,7 +448,7 @@ void configure_connection(SSL *ssl){
         error_handling("fail to do handshake");
     }
 }
-void error_handling(char *message){
+static void error_handling(char *message){
     fputs(message, stderr);
     fputc('\n', stderr);
     exit(1);
@@ -387,7 +484,7 @@ static int ext_parse_cb(SSL *s, unsigned int ext_type,
     return 1;
 }
 
-time_t is_datetime(const char *datetime){
+static time_t is_datetime(const char *datetime){
     // datetime format is YYYYMMDDHHMMSSz
     struct tm   time_val;
 
