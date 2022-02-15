@@ -8,7 +8,11 @@
 
 #define BUF_SIZE 10000
 
+#if MODE
 int DNS = 1; 
+#else
+int DNS = 0;
+#endif
 // 0 = false; //normal TLS 1.3
 // 1 = true;  //ZTLS
 
