@@ -82,6 +82,8 @@ static void *thread_init_tcp_sync(void* arguments)
 
 int main(int argc, char *argv[]){
 	res_init();
+//	_res.options = _res.options | RES_USEVC ; // use TCP connections for queries instead of UDP datagrams 
+	// to avoid TCP retry after UDP failure
     init_openssl();
     SSL_CTX *ctx = create_context();
     // static ctx configurations 
@@ -120,25 +122,8 @@ int main(int argc, char *argv[]){
 	// Dynamic interaction start
 	//=============================================================
     
-	/*
-    size_t len = resolve_hostname(argv[1], argv[2], &addr);
-    clock_gettime(CLOCK_MONOTONIC, &begin);
-    printf("complete A and AAAA DNS records query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
-    
-	if(connect(sock, (struct sockaddr*) &addr, len) < 0){
-        error_handling("connect() error!");
-    }else{
-    	printf("complete TCP Sync : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
-    }
-
-	*/
-
 	// get TXT record & dynamic ctx configurations for ZTLS
     if(DNS){
-//		void (*fp)(char *argv[], struct sockaddr_storage * addr, int sock);
-//		fp = init_tcp_sync;
-//		fp(argv, &addr, sock);
-
 		struct arg_struct args;
 		args.argv = argv;
 		args.addr = &addr;
@@ -147,7 +132,8 @@ int main(int argc, char *argv[]){
 		pthread_t ptid;
 		pthread_create(&ptid, NULL, &thread_init_tcp_sync,(void *) &args);
 
-		response = res_query("aaa.ztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
+//		response = res_query("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
+		response = res_search("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
 		// log
     	clock_gettime(CLOCK_MONOTONIC, &begin);
     	printf("complete DNS TXT record query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
