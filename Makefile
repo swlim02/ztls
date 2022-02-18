@@ -7,5 +7,7 @@ tls_client: echo_client.c
 server: echo_mpserv.c
 	gcc -o server echo_mpserv.c -lssl -lcrypto
 
+all: ztls_client tls_client server
+
 clean:
 	rm server tls_client ztls_client

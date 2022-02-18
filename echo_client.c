@@ -82,8 +82,8 @@ static void *thread_init_tcp_sync(void* arguments)
 
 int main(int argc, char *argv[]){
 	res_init();
-//	_res.options = _res.options | RES_USEVC ; // use TCP connections for queries instead of UDP datagrams 
-	// to avoid TCP retry after UDP failure
+	_res.options = _res.options | RES_USEVC ; 	// use TCP connections for queries instead of UDP datagrams 
+												// to avoid TCP retry after UDP failure
     init_openssl();
     SSL_CTX *ctx = create_context();
     // static ctx configurations 
@@ -133,7 +133,7 @@ int main(int argc, char *argv[]){
 		pthread_create(&ptid, NULL, &thread_init_tcp_sync,(void *) &args);
 
 //		response = res_query("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
-		response = res_search("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
+		response = res_search(argv[1], C_IN, type, query_buffer, sizeof(query_buffer));
 		// log
     	clock_gettime(CLOCK_MONOTONIC, &begin);
     	printf("complete DNS TXT record query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
