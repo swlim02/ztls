@@ -5,6 +5,7 @@
 #include <resolv.h>
 #include <string.h>
 #include <pthread.h>
+#include <netdb.h>
 
 #define BUF_SIZE 10000
 
@@ -235,16 +236,17 @@ int main(int argc, char *argv[]){
     return 0;
 }
 static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock) {
-	size_t len = resolve_hostname(argv[1], argv[2], addr);
-    struct timespec begin;
-    clock_gettime(CLOCK_MONOTONIC, &begin);
-    printf("complete A and AAAA DNS records query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
-    
+    struct timespec begin1, begin2;
+    clock_gettime(CLOCK_MONOTONIC, &begin1);
+    printf("start A and AAAA DNS records query : %f\n",(begin1.tv_sec) + (begin1.tv_nsec) / 1000000000.0);
+    size_t len = resolve_hostname(argv[1], argv[2], addr);
+    clock_gettime(CLOCK_MONOTONIC, &begin2);
+    printf("complete A and AAAA DNS records query : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
 	if(connect(sock, (struct sockaddr*) addr, len) < 0){
         error_handling("connect() error!");
     }else{
-    	clock_gettime(CLOCK_MONOTONIC, &begin);
-    	printf("complete TCP Sync : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+    	clock_gettime(CLOCK_MONOTONIC, &begin2);
+    	printf("complete TCP Sync : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
     }
 }
 
@@ -422,8 +424,13 @@ static void keylog_callback(const SSL* ssl, const char *line){
 //    printf("%s\n", line);
 }
 static size_t resolve_hostname(const char *host, const char *port, struct sockaddr_storage *addr){
-    struct addrinfo *res = 0;
-    if(getaddrinfo(host, port, 0, &res) != 0)
+    struct addrinfo hint;
+	memset(&hint, 0, sizeof(struct addrinfo));
+	hint.ai_family = AF_INET;
+	hint.ai_socktype = SOCK_STREAM;
+    hint.ai_protocol = IPPROTO_TCP;
+	struct addrinfo *res = 0;
+    if(getaddrinfo(host, port, &hint, &res) != 0)
         error_handling("fail to transform address");
     size_t len = res->ai_addrlen;
     memcpy(addr, res->ai_addr, len);
