@@ -67,11 +67,21 @@ static int ext_parse_cb(SSL *s, unsigned int ext_type,
 static time_t is_datetime(const char *datetime);
 
 static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock);
+static void init_txtrecord_query(char *argv[], ns_type type, 
+		unsigned char * query_buffer, int buffer_size, int * response);
 
 struct arg_struct {
 	char ** argv;
 	struct sockaddr_storage * addr;
 	int sock;
+};
+
+struct arg_struct2 {
+	char ** argv;
+	ns_type type;
+	unsigned char * query_buffer;
+	int buffer_size;
+	int * response;
 };
 
 static void *thread_init_tcp_sync(void* arguments)
@@ -81,28 +91,35 @@ static void *thread_init_tcp_sync(void* arguments)
 	pthread_exit(NULL);
 }
 
+static void *thread_init_txtrecord_query(void* arguments)
+{
+	struct arg_struct2 * args2 = (struct arg_struct2 *) arguments;
+	init_txtrecord_query(args2->argv, args2->type, args2->query_buffer, args2->buffer_size, args2->response);
+	pthread_exit(NULL);
+}
+
 int main(int argc, char *argv[]){
 	res_init();
-    init_openssl();
-    SSL_CTX *ctx = create_context();
-    // static ctx configurations 
-    SSL_CTX_load_verify_locations(ctx, "./dns/cert/CarolCert.pem", "./dns/cert/");
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL); // SSL_VERIFY_NONE
-    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
-    SSL_CTX_set_keylog_callback(ctx, keylog_callback);
+    	init_openssl();
+    	SSL_CTX *ctx = create_context();
+    	// static ctx configurations 
+	SSL_CTX_load_verify_locations(ctx, "./dns/cert/CarolCert.pem", "./dns/cert/");
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL); // SSL_VERIFY_NONE
+	SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+	SSL_CTX_set_keylog_callback(ctx, keylog_callback);
 	SSL * ssl = NULL;
 
-    if(argc != 3){
-        printf("Usage : %s <port>\n", argv[0]);
-        exit(1);
-    }
+    	if(argc != 3){
+        	printf("Usage : %s <port>\n", argv[0]);
+        	exit(1);
+    	}
 
-    int sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if(sock < 0){
-        error_handling("socket() error");
-    }
+    	int sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+    	if(sock < 0){
+        	error_handling("socket() error");
+    	}
 
-    struct sockaddr_storage addr;
+    	struct sockaddr_storage addr;
 	char txt_record_except_signature[BUF_SIZE];
 	char *txt_record_all;
 	unsigned char query_buffer[4096];
@@ -112,73 +129,86 @@ int main(int argc, char *argv[]){
 	ns_msg nsMsg;
 	ns_rr rr;
 
-    // log
-    struct timespec begin;
-    clock_gettime(CLOCK_MONOTONIC, &begin);
-    printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+	pthread_t ptid;
+    	// log
+    	struct timespec begin;
+   	 clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
 	
 	//=============================================================
 	// Dynamic interaction start
 	//=============================================================
     
 	// get TXT record & dynamic ctx configurations for ZTLS
-    if(DNS){
+    	if(DNS){
+	    	printf("==== ZTLS MODE ====\n");
 		struct arg_struct args;
 		args.argv = argv;
 		args.addr = &addr;
 		args.sock = sock;
 
-		pthread_t ptid;
-		pthread_create(&ptid, NULL, &thread_init_tcp_sync,(void *) &args);
+//		pthread_create(&ptid, NULL, &thread_init_tcp_sync,(void *) &args);
+
+		
+		struct arg_struct2 args2;
+		args2.argv = argv;
+		args2.type = type;
+		args2.query_buffer = query_buffer;
+		args2.buffer_size = sizeof(query_buffer);
+		args2.response = &response;
 
 //		response = res_query("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
 		_res.options = _res.options | RES_USEVC ; 	// use TCP connections for queries instead of UDP datagrams 
 												// to avoid TCP retry after UDP failure
-		response = res_search(argv[1], C_IN, type, query_buffer, sizeof(query_buffer));
-		// log
-    	clock_gettime(CLOCK_MONOTONIC, &begin);
-    	printf("complete DNS TXT record query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
-		if (response < 0) {
-			printf("Error looking up service: TXT");
-			return 2;
-		}    
-		ns_initparse(query_buffer, response, &nsMsg);
-		ns_parserr(&nsMsg, ns_s_an, 0, &rr);
-		u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+1 );
-		txt_record_all=(char*)rdata;
-		txt_record_all[strlen((char*)rdata)] = '\0';
-        load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all); 
-		SSL_CTX_add_custom_ext(ctx, 53, SSL_EXT_CLIENT_HELLO, dns_info_add_cb, dns_info_free_cb,NULL, NULL,NULL);// extentionTye = 53, Extension_data = dns_cache_id
-    	if(dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
-			SSL_CTX_set1_groups_list(ctx, "X25519");
-			// for demo, we will add other groups later.
-			// switch 
-			// P-256, P-384, P-521, X25519, X448, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
-    	}
-    	ssl = SSL_new(ctx);
-    	SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
-        // Check timestamp Valid
-    	if(dns_info.DNSCacheInfo.validity_period_not_before < time(NULL) && dns_info.DNSCacheInfo.validity_period_not_after > time(NULL)){
-        	printf("Valid Period\n");
-    	}else{
-       	 	printf("Not Valid Period\n");
-    	}
-		SSL_use_PrivateKey(ssl, dns_info.KeyShareEntry.skey); // set server's keyshare // this function is modified 
-        SSL_use_certificate(ssl, dns_info.cert); // set sever's cert and verify cert_chain // this function is modified
-    	if(dns_info.CertVerifyEntry.signature_algorithms == 2052)     //rsa pss rsae sha256 0x0804
-		{
-			strcat(txt_record_except_signature, "\n");
-			strcat(dns_info.CertVerifyEntry.cert_verify, "\n");
-			SSL_export_keying_material(ssl, (unsigned char*) txt_record_except_signature, 0, NULL, 0,
-				 dns_info.CertVerifyEntry.cert_verify, BUF_SIZE, 0); // cert verify: signature of DNS cache info check. // this function is modified
-		}	// for demo, we will only support rsa pss rsae_sha256 
+//		response = res_search(argv[1], C_IN, type, query_buffer, sizeof(query_buffer));
+//		init_txtrecord_query(argv, type, query_buffer, sizeof(query_buffer), &response);
+		response = -2;
+		pthread_create(&ptid, NULL, &thread_init_txtrecord_query, (void *) &args2);
 
-		pthread_join(ptid, NULL);
-
-    }else {
 		init_tcp_sync(argv, &addr, sock);
-    	ssl = SSL_new(ctx);
-    	SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
+
+		if (response < 0) { // txt record has not arrived yet or failed to get
+			printf("Error looking up TXT record; ERROR CODE: %d\n",response);
+			DNS = 0;
+    			ssl = SSL_new(ctx);
+    			SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
+	    		printf("==== CHANGE MODE : ZTLS->TLS ====\n");
+		} else {    
+			ns_initparse(query_buffer, response, &nsMsg);
+			ns_parserr(&nsMsg, ns_s_an, 0, &rr);
+			u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+1 );
+			txt_record_all=(char*)rdata;
+			txt_record_all[strlen((char*)rdata)] = '\0';
+			load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all); 
+			SSL_CTX_add_custom_ext(ctx, 53, SSL_EXT_CLIENT_HELLO, dns_info_add_cb, dns_info_free_cb,NULL, NULL,NULL);// extentionTye = 53, Extension_data = dns_cache_id
+			if(dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
+					SSL_CTX_set1_groups_list(ctx, "X25519");
+					// for demo, we will add other groups later.
+					// switch 
+					// P-256, P-384, P-521, X25519, X448, ffdhe2048, ffdhe3072, ffdhe4096, ffdhe6144, ffdhe8192
+			}
+			ssl = SSL_new(ctx);
+			SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
+			// Check timestamp Valid
+			if(dns_info.DNSCacheInfo.validity_period_not_before < time(NULL) && dns_info.DNSCacheInfo.validity_period_not_after > time(NULL)){
+				printf("Valid Period\n");
+			}else{
+				printf("Not Valid Period\n");
+			}
+			SSL_use_PrivateKey(ssl, dns_info.KeyShareEntry.skey); // set server's keyshare // this function is modified 
+			SSL_use_certificate(ssl, dns_info.cert); // set sever's cert and verify cert_chain // this function is modified
+			if(dns_info.CertVerifyEntry.signature_algorithms == 2052)     //rsa pss rsae sha256 0x0804
+			{
+				strcat(txt_record_except_signature, "\n");
+				strcat(dns_info.CertVerifyEntry.cert_verify, "\n");
+				SSL_export_keying_material(ssl, (unsigned char*) txt_record_except_signature, 0, NULL, 0,
+				dns_info.CertVerifyEntry.cert_verify, BUF_SIZE, 0); // cert verify: signature of DNS cache info check. // this function is modified
+			}	// for demo, we will only support rsa pss rsae_sha256 
+		}
+	}else {
+		init_tcp_sync(argv, &addr, sock);
+    		ssl = SSL_new(ctx);
+    		SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
 	}
 	// threads join
 
@@ -192,8 +222,8 @@ int main(int argc, char *argv[]){
     struct timespec send_ctos, receive_ctos;
 
     if(!DNS){ // normal TLS 1.3
-        memcpy(message, "hello\n", 6);
-        
+        	memcpy(message, "hello\n", 6);
+  
 		SSL_write(ssl, message, strlen(message));
 		clock_gettime(CLOCK_MONOTONIC, &send_ctos);
 		printf("send : %s", message);
@@ -208,48 +238,57 @@ int main(int argc, char *argv[]){
 		printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
     }
 
-    while(1){
-        fputs("Input message(Q to quit): ", stdout);
-        fgets(message, BUF_SIZE, stdin);
+	while(1){
+		fputs("Input message(Q to quit): ", stdout);
+		fgets(message, BUF_SIZE, stdin);
 
-        if(!strcmp(message, "q\n") || !strcmp(message, "Q\n")){
-            break;
-        }
+		if(!strcmp(message, "q\n") || !strcmp(message, "Q\n")){
+		    break;
+		}
 
-        SSL_write(ssl, message, strlen(message));
-        clock_gettime(CLOCK_MONOTONIC, &send_ctos);
-        printf("send : %s", message);
-        printf("%f\n",(send_ctos.tv_sec) + (send_ctos.tv_nsec) / 1000000000.0);
-        
-	if((str_len = SSL_read(ssl, message, BUF_SIZE-1))<=0){
-        	printf("error\n");
-        }
-        message[str_len] = 0;
-        clock_gettime(CLOCK_MONOTONIC, &receive_ctos);
-        printf("Message from server: %s", message);
-        printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
-    }
-    SSL_free(ssl);
-    close(sock);
-    SSL_CTX_free(ctx);
-    EVP_cleanup();
-    return 0;
+		SSL_write(ssl, message, strlen(message));
+		clock_gettime(CLOCK_MONOTONIC, &send_ctos);
+		printf("send : %s", message);
+		printf("%f\n",(send_ctos.tv_sec) + (send_ctos.tv_nsec) / 1000000000.0);
+		
+		if((str_len = SSL_read(ssl, message, BUF_SIZE-1))<=0){
+			printf("error\n");
+		}
+		message[str_len] = 0;
+		clock_gettime(CLOCK_MONOTONIC, &receive_ctos);
+		printf("Message from server: %s", message);
+		printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
+	}
+	pthread_join(ptid, NULL);
+    	SSL_free(ssl);
+    	close(sock);
+    	SSL_CTX_free(ctx);
+    	EVP_cleanup();
+    	return 0;
 }
 static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock) {
-    struct timespec begin1, begin2;
-    clock_gettime(CLOCK_MONOTONIC, &begin1);
-    printf("start A and AAAA DNS records query : %f\n",(begin1.tv_sec) + (begin1.tv_nsec) / 1000000000.0);
-    size_t len = resolve_hostname(argv[1], argv[2], addr);
-    clock_gettime(CLOCK_MONOTONIC, &begin2);
-    printf("complete A and AAAA DNS records query : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
-	if(connect(sock, (struct sockaddr*) addr, len) < 0){
-        error_handling("connect() error!");
-    }else{
+    	struct timespec begin1, begin2;
+    	clock_gettime(CLOCK_MONOTONIC, &begin1);
+    	printf("start A and AAAA DNS records query : %f\n",(begin1.tv_sec) + (begin1.tv_nsec) / 1000000000.0);
+    	size_t len = resolve_hostname(argv[1], argv[2], addr);
     	clock_gettime(CLOCK_MONOTONIC, &begin2);
-    	printf("complete TCP Sync : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
-    }
+    	printf("complete A and AAAA DNS records query : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
+	if(connect(sock, (struct sockaddr*) addr, len) < 0){
+		error_handling("connect() error!");
+	}else{
+		clock_gettime(CLOCK_MONOTONIC, &begin2);
+		printf("complete TCP Sync : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
+	}
 }
 
+static void init_txtrecord_query(char *argv[], ns_type type, 
+		unsigned char * query_buffer, int buffer_size, int * response) {
+	*response = res_search(argv[1], C_IN, type, query_buffer, buffer_size);
+	// log
+    	struct timespec begin;
+	clock_gettime(CLOCK_MONOTONIC, &begin);
+	printf("\ncomplete DNS TXT record query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+}
 
 static void init_openssl(){
     SSL_load_error_strings();
