@@ -66,18 +66,19 @@ static int ext_parse_cb(SSL *s, unsigned int ext_type,
                         size_t inlen, int *al, void *parse_arg);
 static time_t is_datetime(const char *datetime);
 
-static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock);
+static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock, int * is_start);
 
 struct arg_struct {
 	char ** argv;
 	struct sockaddr_storage * addr;
 	int sock;
+	int * is_start;
 };
 
 static void *thread_init_tcp_sync(void* arguments)
 {
 	struct arg_struct * args = (struct arg_struct *) arguments;
-	init_tcp_sync(args->argv, args->addr, args->sock);
+	init_tcp_sync(args->argv, args->addr, args->sock, args->is_start);
 	pthread_exit(NULL);
 }
 
@@ -112,11 +113,14 @@ int main(int argc, char *argv[]){
 	ns_msg nsMsg;
 	ns_rr rr;
 
+	int is_start = -1;
+
     // log
-    struct timespec begin;
-    clock_gettime(CLOCK_MONOTONIC, &begin);
-    printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
-	
+	if (!DNS) {
+    	struct timespec begin;
+    	clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+	}
 	//=============================================================
 	// Dynamic interaction start
 	//=============================================================
@@ -127,13 +131,21 @@ int main(int argc, char *argv[]){
 		args.argv = argv;
 		args.addr = &addr;
 		args.sock = sock;
+		args.is_start = &is_start;
 
 		pthread_t ptid;
 		pthread_create(&ptid, NULL, &thread_init_tcp_sync,(void *) &args);
+		// A thread is created when a program is executed, and is executed when a user triggers
+		sleep(1);
 
-//		response = res_query("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
-		_res.options = _res.options | RES_USEVC ; 	// use TCP connections for queries instead of UDP datagrams 
-												// to avoid TCP retry after UDP failure
+    	struct timespec begin;
+    	clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+		is_start =1; //user trigger
+
+		//		response = res_query("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
+		_res.options = _res.options | RES_USE_EDNS0 ; 	// use EDNS0 
+		// to avoid TCP retry after UDP failure
 		response = res_search(argv[1], C_IN, type, query_buffer, sizeof(query_buffer));
 		// log
     	clock_gettime(CLOCK_MONOTONIC, &begin);
@@ -176,7 +188,8 @@ int main(int argc, char *argv[]){
 		pthread_join(ptid, NULL);
 
     }else {
-		init_tcp_sync(argv, &addr, sock);
+		is_start = 1;
+		init_tcp_sync(argv, &addr, sock, &is_start);
     	ssl = SSL_new(ctx);
     	SSL_set_wfd(ssl, DNS); // fd : 1 => ZTLS, fd : 0 => TLS 1.3
 	}
@@ -235,7 +248,10 @@ int main(int argc, char *argv[]){
     EVP_cleanup();
     return 0;
 }
-static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock) {
+static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock, int * is_start) {
+	while(*is_start < 0) { //for prototyping. next, use signal.
+		//nothing
+	}
     struct timespec begin1, begin2;
     clock_gettime(CLOCK_MONOTONIC, &begin1);
     printf("start A and AAAA DNS records query : %f\n",(begin1.tv_sec) + (begin1.tv_nsec) / 1000000000.0);

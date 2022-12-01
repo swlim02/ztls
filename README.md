@@ -5,7 +5,7 @@
 
 # How to run 
 > ./server port
-> ./client ip port
+> ./client domain_address port
 
 # prerequisite
 intstall github.com/swlim02/ztlslib
