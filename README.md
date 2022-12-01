@@ -7,10 +7,12 @@
 > ./server port
 > ./client domain_address port
 
-# prerequisite
+# Prerequisite
 intstall github.com/swlim02/ztlslib
 
 # TroubleShooting
 1. add environment variables
 export LD_LIBRARY_PATH=/usr/local/lib
 
+# Environment Setup
+This program requires several DNS records. See an_example_of_DNSzonefile_for_ZTLS file for environment setup.
