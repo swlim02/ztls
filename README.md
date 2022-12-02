@@ -4,8 +4,8 @@
 > make server
 
 # How to run 
-> ./server port
-> ./client domain_address port
+> ./server [port]
+> ./client [domain_address] [port]
 
 # Prerequisite
 intstall github.com/swlim02/ztlslib
