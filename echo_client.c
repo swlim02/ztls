@@ -44,7 +44,7 @@ struct DNS_info{
 } dns_info;
 
 static void init_openssl();
-static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg);
+static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg, char* ztls_cert);
 static SSL_CTX *create_context();
 static void keylog_callback(const SSL* ssl, const char *line);
 static size_t resolve_hostname(const char *host, const char *port, struct sockaddr_storage *addr);
@@ -67,11 +67,19 @@ static int ext_parse_cb(SSL *s, unsigned int ext_type,
 static time_t is_datetime(const char *datetime);
 
 static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock, int * is_start);
-
+static void tlsa_query(char *argv[], unsigned char query_buffer[], int buffer_size, unsigned char ** tlsa_record_all, int * is_start);
+unsigned char * hex_to_base64(unsigned char *hex0, int size, unsigned char hex[]);
 struct arg_struct {
 	char ** argv;
 	struct sockaddr_storage * addr;
 	int sock;
+	int * is_start;
+};
+struct arg_struct2 {
+	char ** argv;
+	unsigned char * query_buffer;
+	int buffer_size;
+	unsigned char ** tlsa_record_all;
 	int * is_start;
 };
 
@@ -82,15 +90,22 @@ static void *thread_init_tcp_sync(void* arguments)
 	pthread_exit(NULL);
 }
 
+static void *thread_tlsa_query(void* arguments)
+{
+	struct arg_struct2 * args = (struct arg_struct2 *) arguments;
+	tlsa_query(args->argv, args->query_buffer , args->buffer_size, args->tlsa_record_all, args->is_start);
+	pthread_exit(NULL);
+}
+
 int main(int argc, char *argv[]){
 	res_init();
-    init_openssl();
-    SSL_CTX *ctx = create_context();
-    // static ctx configurations 
-    SSL_CTX_load_verify_locations(ctx, "./dns/cert/CarolCert.pem", "./dns/cert/");
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL); // SSL_VERIFY_NONE
-    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
-    SSL_CTX_set_keylog_callback(ctx, keylog_callback);
+    	init_openssl();
+    	SSL_CTX *ctx = create_context();
+    	// static ctx configurations 
+    	SSL_CTX_load_verify_locations(ctx, "./dns/cert/CarolCert.pem", "./dns/cert/");
+    	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL); // SSL_VERIFY_NONE
+    	SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+    	SSL_CTX_set_keylog_callback(ctx, keylog_callback);
 	SSL * ssl = NULL;
 
     if(argc != 3){
@@ -103,10 +118,17 @@ int main(int argc, char *argv[]){
         error_handling("socket() error");
     }
 
+    char * ztls_cert;
     struct sockaddr_storage addr;
 	char txt_record_except_signature[BUF_SIZE];
 	char *txt_record_all;
+	unsigned char *tlsa_record_all;
+	char tlsa_record[BUF_SIZE];
 	unsigned char query_buffer[4096];
+	unsigned char query_buffer2[4096];
+	unsigned char hex_buffer[2000] = "";
+	unsigned char hex_out[2000];
+	unsigned char hex_out_cert[4096] ="";
 	int response;
 	ns_type type;
 	type= ns_t_txt;
@@ -116,6 +138,7 @@ int main(int argc, char *argv[]){
 	int is_start = -1;
 
     // log
+    	printf("****start****\n");
 	if (!DNS) {
     	struct timespec begin;
     	clock_gettime(CLOCK_MONOTONIC, &begin);
@@ -127,6 +150,8 @@ int main(int argc, char *argv[]){
     
 	// get TXT record & dynamic ctx configurations for ZTLS
     if(DNS){
+	_res.options = _res.options | RES_USE_EDNS0 ; 	// use EDNS0 
+	// to avoid TCP retry after UDP failure
 		struct arg_struct args;
 		args.argv = argv;
 		args.addr = &addr;
@@ -135,21 +160,31 @@ int main(int argc, char *argv[]){
 
 		pthread_t ptid;
 		pthread_create(&ptid, NULL, &thread_init_tcp_sync,(void *) &args);
-		// A thread is created when a program is executed, and is executed when a user triggers
-		sleep(1);
 
-    	struct timespec begin;
+		struct arg_struct2 args2;
+		args2.argv = argv;
+		args2.query_buffer = query_buffer2;
+		args2.buffer_size = sizeof(query_buffer2);
+		args2.tlsa_record_all = &tlsa_record_all;
+		args2.is_start = &is_start;
+
+		pthread_t ptid2;
+		pthread_create(&ptid2, NULL, &thread_tlsa_query, (void *) &args2);
+
+
+	// A thread is created when a program is executed, and is executed when a user triggers
+	sleep(1);
+	struct timespec begin;
     	clock_gettime(CLOCK_MONOTONIC, &begin);
+	is_start =1; //user trigger
     	printf("start : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
-		is_start =1; //user trigger
 
-		//		response = res_query("aaa.nsztls.snu.ac.kr", C_IN, type, query_buffer, sizeof(query_buffer));
-		_res.options = _res.options | RES_USE_EDNS0 ; 	// use EDNS0 
-		// to avoid TCP retry after UDP failure
+	clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("start DNS TXT query: %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
 		response = res_search(argv[1], C_IN, type, query_buffer, sizeof(query_buffer));
 		// log
     	clock_gettime(CLOCK_MONOTONIC, &begin);
-    	printf("complete DNS TXT record query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+    	printf("complete DNS TXT query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
 		if (response < 0) {
 			printf("Error looking up service: TXT");
 			return 2;
@@ -159,7 +194,22 @@ int main(int argc, char *argv[]){
 		u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+1 );
 		txt_record_all=(char*)rdata;
 		txt_record_all[strlen((char*)rdata)] = '\0';
-        load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all); 
+
+
+	pthread_join(ptid2, NULL);
+	unsigned char * based64_out;
+	based64_out = hex_to_base64(tlsa_record_all, 687, hex_buffer);
+
+	char newline2[4] = "\n";
+	for(int j = 0; j < 916-64 ; j=j+64){
+		strncat(hex_out_cert,based64_out+j,64);
+		strcat(hex_out_cert,newline2);
+	}
+	strcat(hex_out_cert,based64_out+896);
+	strcat(hex_out_cert,newline2);
+	ztls_cert = hex_out_cert;	
+
+        load_dns_info2(&dns_info, txt_record_except_signature, txt_record_all, ztls_cert); 
 		SSL_CTX_add_custom_ext(ctx, 53, SSL_EXT_CLIENT_HELLO, dns_info_add_cb, dns_info_free_cb,NULL, NULL,NULL);// extentionTye = 53, Extension_data = dns_cache_id
     	if(dns_info.KeyShareEntry.group == 29){  // keyshare group : 0x001d(X25519)
 			SSL_CTX_set1_groups_list(ctx, "X25519");
@@ -220,7 +270,7 @@ int main(int argc, char *argv[]){
 		printf("Message from server: %s", message);
 		printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
     }
-
+/* Temporarily deleted for performance measurement
     while(1){
         fputs("Input message(Q to quit): ", stdout);
         fgets(message, BUF_SIZE, stdin);
@@ -242,6 +292,7 @@ int main(int argc, char *argv[]){
         printf("Message from server: %s", message);
         printf("%f\n",(receive_ctos.tv_sec) + (receive_ctos.tv_nsec) / 1000000000.0);
     }
+*/
     SSL_free(ssl);
     close(sock);
     SSL_CTX_free(ctx);
@@ -265,24 +316,62 @@ static void init_tcp_sync(char *argv[], struct sockaddr_storage * addr, int sock
     	printf("complete TCP Sync : %f\n",(begin2.tv_sec) + (begin2.tv_nsec) / 1000000000.0);
     }
 }
+static void tlsa_query(char *argv[], unsigned char query_buffer[], int buffer_size, unsigned char ** tlsa_record_all, int * is_start) {
+	
+	while(*is_start < 0) { //for prototyping. next, use signal.
+		//nothing
+	}
 
-
+	char query_url[100] = "_443._tcp.";
+	strcat(query_url,argv[1]);
+	ns_type type2;
+	type2 = ns_t_tlsa; 
+	ns_msg nsMsg;
+	ns_rr rr;
+	int response;
+    	struct timespec begin;
+    	clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("start DNS TLSA query: %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+		response = res_search(query_url, C_IN, type2, query_buffer, buffer_size);
+		// log
+    	clock_gettime(CLOCK_MONOTONIC, &begin);
+    	printf("complete DNS TLSA query : %f\n",(begin.tv_sec) + (begin.tv_nsec) / 1000000000.0);
+	if (response < 0) {
+		printf("Error looking up service: TLSA");
+	}    
+	ns_initparse(query_buffer, response, &nsMsg);
+	ns_parserr(&nsMsg, ns_s_an, 0, &rr);
+	u_char const *rdata = (u_char*)(ns_rr_rdata(rr)+3 );
+	
+	*tlsa_record_all = (unsigned char*)rdata;
+}
 static void init_openssl(){
     SSL_load_error_strings();
     OpenSSL_add_all_algorithms();
 }
 
-static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg){
+static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char* dnsmsg, char * ztls_cert){
     BIO *bio_key, *bio_cert;
     char *tmp;
 	char publickey_prefix[150] = "-----BEGIN PUBLIC KEY-----\n";
 	char publickey_postfix[30] = "\n-----END PUBLIC KEY-----\n";
 	char certificate_prefix[BUF_SIZE] = "-----BEGIN CERTIFICATE-----\n";
 	char certificate_postfix[30] = "-----END CERTIFICATE-----\n";
+	char certificate_prefix2[BUF_SIZE] = "-----BEGIN CERTIFICATE-----\n";
+	char certificate_postfix2[30] = "-----END CERTIFICATE-----\n";
 	char txt_record_signature[BUF_SIZE];
 	char newline[4] = "\n";
 	char * ztls_version = "v=ztls1";
-	
+	char ztls_cert_copy[1000] = "";
+	strcat(ztls_cert_copy,ztls_cert);
+	for(char * str = ztls_cert_copy; *str != '\0'; str++){
+		if (*str=='\n')
+		{
+			strcpy(str,str+1);
+			str--;
+		}
+	}	
+
 	//v=ztls1 check
 	tmp = strtok(dnsmsg," ");
 	strcat(truncated_dnsmsg_out,tmp);
@@ -325,51 +414,17 @@ static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char*
     PEM_read_bio_PUBKEY(bio_key, &(dp->KeyShareEntry.skey), NULL, NULL);
 
 	// load certificate
-	strtok(NULL," ");
-	tmp = strtok(NULL," ");
-	strcat(truncated_dnsmsg_out,tmp);
-
 	char * begin_cert = "B_CERTIFICATE";
 	char * end_cert = "E_CERTIFICATE";
 
-	// ZTLS DNS certificate format
-	// B_CERTIFICATE
-	// value (1) (2) (3) iterate
-	// E_CERTIFICATE
-	
-	if(0!=strcmp(tmp,begin_cert)){
-		printf("CERTIFICATE INFO ERROR\n");
-	}
-
-	strtok(NULL," ");
-	tmp = strtok(NULL," ");
-	strcat(truncated_dnsmsg_out,tmp);
-	int i =0;
-	while((0!=strcmp(tmp,end_cert) && i < 100)){
-		strcat(certificate_prefix, tmp);//value (1)
-		strcat(certificate_prefix, newline);
-		tmp = strtok(NULL," ");
-		strcat(truncated_dnsmsg_out,tmp);
-		if(0==strcmp(tmp,end_cert)) break;
-		strcat(certificate_prefix, tmp);//value (2)
-		strcat(certificate_prefix, newline);
-		tmp = strtok(NULL," ");
-		strcat(truncated_dnsmsg_out,tmp);
-		if(0==strcmp(tmp,end_cert)) break;
-		strcat(certificate_prefix, tmp);//value (3)
-		strcat(certificate_prefix, newline);
-		strtok(NULL," ");
-		tmp = strtok(NULL," ");
-		strcat(truncated_dnsmsg_out,tmp);
-		i++;
-	}
-	if (100 <= i ) {
-		printf("CERTIFICATE INFO ERROR\n");
-	}
-	strcat(certificate_prefix, certificate_postfix);
+	strcat(truncated_dnsmsg_out,begin_cert);
+	strcat(truncated_dnsmsg_out,ztls_cert_copy);
+	strcat(truncated_dnsmsg_out,end_cert);
+	strcat(certificate_prefix2, ztls_cert);
+	strcat(certificate_prefix2, certificate_postfix2);
 
     bio_cert = BIO_new(BIO_s_mem());
-    BIO_puts(bio_cert, certificate_prefix);
+    BIO_puts(bio_cert, certificate_prefix2);
     PEM_read_bio_X509(bio_cert, &(dp->cert), NULL, NULL);
 
 // Client Certificate Request Check
@@ -385,10 +440,9 @@ static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char*
     
 //	load TXT signature (cert verify)
     dp->CertVerifyEntry.signature_algorithms = strtoul(tmp, NULL, 0);
-//	printf("%s",truncated_dnsmsg_out);
 	strtok(NULL," ");
 	tmp = strtok(NULL," ");
-    i =0;
+    	int i =0;
 	while(i < 100){
 		strcat(txt_record_signature, tmp);//value (1)
 		tmp = strtok(NULL," ");
@@ -423,11 +477,6 @@ static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char*
 static SSL_CTX *create_context(){
     SSL_CTX* ctx = SSL_CTX_new(SSLv23_client_method());
     if(!ctx) error_handling("fail to create ssl context");
-    /*
-     * ssl_check_allowed_versions(ctx->min_proto_version, larg) : larg가 최고 proto로 설정;
-               && ssl_set_version_bound(ctx->method->version, (int)larg,
-                                        &ctx->max_proto_version);
-     */
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
     return ctx;
 }
@@ -505,3 +554,61 @@ static time_t is_datetime(const char *datetime){
 
     return mktime(&time_val);       // Invalid
 }
+
+
+unsigned char * hex_to_base64(unsigned char *hex0, int size, unsigned char hex[])
+{
+	char temp[10];
+	unsigned char * temc;
+	unsigned char n;
+	temc = hex0;
+	for(int i=0; i<size ; i++) {
+		sprintf(temp,"%02X",*temc );
+		strcat(hex,temp);
+		temc++;
+	}
+	unsigned char *hex_string = hex;
+
+    static const char base64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    size_t input_len = size;
+    size_t output_len = 1500;
+    char * out_buf = malloc(output_len);
+    if (!out_buf) {
+        return out_buf;
+    }
+
+    unsigned int digits;
+    int d_len;
+    char *out = out_buf;
+    while (*hex_string) {
+        if (sscanf(hex_string, "%3x%n", &digits, &d_len) != 1) {
+            /* parse error */
+            free(out_buf);
+            return NULL;
+        }
+        switch (d_len) {
+        case 3:
+            *out++ = base64[digits >> 6];
+            *out++ = base64[digits & 0x3f];
+            break;
+        case 2:
+            digits <<= 4;
+            *out++ = base64[digits >> 6];
+            *out++ = base64[digits & 0x3f];
+            *out++ = '=';
+            break;
+        case 1:
+            *out++ = base64[digits];
+            *out++ = '=';
+            *out++ = '=';
+        }
+        hex_string += d_len;
+    }
+
+    *out++ = '\0';
+    return out_buf;
+}
+
+
