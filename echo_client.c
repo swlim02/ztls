@@ -470,10 +470,6 @@ static int load_dns_info2(struct DNS_info* dp, char* truncated_dnsmsg_out, char*
     return 0;
 }
 
-/*
- * SSL 구조체를 생성, 통신 프로토콜 선택;
- * return SSL_CTX* SSL 구조체;
- */
 static SSL_CTX *create_context(){
     SSL_CTX* ctx = SSL_CTX_new(SSLv23_client_method());
     if(!ctx) error_handling("fail to create ssl context");

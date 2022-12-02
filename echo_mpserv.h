@@ -40,17 +40,8 @@
 //#include "../openssl/err.h"
 
 #define BUF_SIZE 100
-/*
- * 모든 알고리즘, 에러 메시지 불러오기;
- */
 void init_openssl();
-/*
- * SSL 구조체인 SSL_CTX 생성 및 통신 프로토콜 선택;
- */
 SSL_CTX *create_context();
-/*
- * set 타원곡선, set cert, set cert private key
- */
 void set_context(SSL_CTX* ctx);
 /*
  * return : server socket fd;
@@ -59,6 +50,6 @@ void keylog_callback(const SSL* ssl, const char *line);
 int create_listen(int port);
 
 void error_handling(char *message);
-void read_childproc(int sig);   // signal이 발생했을 때 실행
+void read_childproc(int sig);  
 
 #endif //TLS13_ECHO_EHCO_MPSERV_H
