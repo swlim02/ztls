@@ -1,3 +1,8 @@
+Welcome to the ztls Project
+==============================
+The ztls is a project that provides example servers and clients that perform ztls handshake using ztlslib.
+ztlslib (github.com/swlim02/ztlslib) is a library that implements ZTLS handshake based on OpenSSL. ZTLS leverages DNS to establish secure sessions with 0-RTT. For details, see 'ZTLS: A DNS-based Approach to Zero Round Trip Delay in TLS handshake' published in THE WEB CONFERENCE 2023.
+
 # How to compile
 > make ztls_client
 > make tls_client
